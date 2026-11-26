@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>打地鼠 Whack-a-Mole</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: #f4efe6; color: #4a3b2a;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh;
+  }
+  .panel {
+    background: #fffaf2; border: 3px solid #8b5e34; border-radius: 16px;
+    padding: 24px 32px; box-shadow: 0 8px 24px rgba(90,60,30,.25);
+    text-align: center; min-width: 400px;
+  }
+  h1 { color: #6b4423; font-size: 26px; margin-bottom: 12px; letter-spacing: 4px; }
+  .hud { display: flex; justify-content: space-between; margin-bottom: 16px; font-size: 16px; font-weight: bold; }
+  .hearts { color: #d33; letter-spacing: 2px; }
+  .lost { color: #bbb; }
+  #board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 0 auto 14px; width: 320px; }
+  .hole {
+    width: 96px; height: 96px; border-radius: 50%;
+    background: radial-gradient(circle at 50% 40%, #7a5230 0%, #5d3d20 70%);
+    border: 4px solid #8b5e34; cursor: pointer; position: relative;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px; color: #d9c6a5; transition: transform .05s;
+  }
+  .hole:active { transform: scale(.94); }
+  .hole .num { position: absolute; top: 6px; left: 12px; font-size: 13px; opacity: .7; }
+  .mole { font-size: 44px; animation: pop .12s ease-out; }
+  @keyframes pop { from { transform: scale(.2); } to { transform: scale(1); } }
+  #msg { min-height: 22px; font-size: 15px; margin-bottom: 8px; }
+  .msg-hit { color: #1a8f3c; font-weight: bold; }
+  .msg-miss { color: #c0392b; font-weight: bold; }
+  .hint { font-size: 13px; color: #9b8468; }
+  button.btn {
+    font-size: 16px; padding: 8px 28px; margin-top: 10px;
+    background: #6b4423; color: #fff; border: none; border-radius: 8px; cursor: pointer;
+  }
+  button.btn:hover { background: #8a5a30; }
+  .final { font-size: 20px; font-weight: bold; margin: 8px 0; }
+  .acc { color: #7a6a55; font-size: 15px; margin-bottom: 6px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="panel">
+  <h1>打 地 鼠</h1>
+  <div id="hud" class="hud">
+    <span>分数: <span id="score">0</span></span>
+    <span>生命: <span id="hearts" class="hearts"></span></span>
+    <span>时间: <span id="time">60</span>s</span>
+  </div>
+  <div id="board"></div>
+  <div id="msg">游戏开始! 看准地鼠, 快按对应数字键或点击地鼠!</div>
+  <div class="hint">按 1~9 击打对应格子, 也可用鼠标点击; q 退出本局</div>
+
+  <div id="gameover" class="hidden">
+    <div class="final">游戏结束! 最终得分: <span id="fscore">0</span></div>
+    <div class="acc" id="acc"></div>
+    <button class="btn" onclick="startGame()">再来一局</button>
+  </div>
+</div>
+
+<script>
+// ==================== 难度参数(与 C/Python 版一致) ====================
+const GAME_DURATION = 60;      // 每局秒数
+const START_LIVES   = 3;
+const HIT_SCORE     = 10;
+const MISS_PENALTY  = 5;
+const MOLE_START_MS = 1200;    // 地鼠初始停留
+const MOLE_MIN_MS   = 450;
+const MOLE_SPEEDUP_MS = 30;    // 每次击中提速
+const SPAWN_GAP_MS  = 300;
+
+let score, lives, hits, swings, moleIdx, lastMole, moleStay, moleDeadline, spawnAt;
+let endTime, timerId, playing = false;
+const board = document.getElementById("board");
+const holes = [];
+
+// 生成 3x3 格子
+for (let i = 0; i < 9; i++) {
+  const d = document.createElement("div");
+  d.className = "hole";
+  d.innerHTML = '<span class="num">' + (i + 1) + '</span>';
+  d.onclick = () => whack(i);
+  board.appendChild(d);
+  holes.push(d);
+}
+
+// 地鼠位置: 与上一只重复时 50% 概率强制换位
+function spawnMole() {
+  let p = Math.floor(Math.random() * 9);
+  if (p === lastMole && Math.random() < 0.5) {
+    while (p === lastMole) p = Math.floor(Math.random() * 9);
+  }
+  return p;
+}
+
+function setMsg(text, cls) {
+  const m = document.getElementById("msg");
+  m.textContent = text;
+  m.className = cls || "";
+}
+
+function drawHearts() {
+  document.getElementById("hearts").innerHTML =
+    "♥".repeat(lives) + '<span class="lost">' + "-".repeat(START_LIVES - lives) + "</span>";
+}
+
+function showMole() {
+  holes.forEach(h => { const m = h.querySelector(".mole"); if (m) m.remove(); });
+  const d = document.createElement("div");
+  d.className = "mole";
+  d.textContent = "🐹";
+  holes[moleIdx].appendChild(d);
+}
+
+function hideMole() {
+  const m = holes[moleIdx] && holes[moleIdx].querySelector(".mole");
+  if (m) m.remove();
+}
+
+// 击打处理
+function whack(idx) {
+  if (!playing) return;
+  swings++;
+  if (moleIdx >= 0 && idx === moleIdx) {          // 击中
+    hits++; score += HIT_SCORE;
+    hideMole(); moleIdx = -1;
+    spawnAt = performance.now() + SPAWN_GAP_MS;
+    if (moleStay > (MOLE_MIN_MS + MOLE_SPEEDUP_MS) / 1000)
+      moleStay -= MOLE_SPEEDUP_MS / 1000;          // 难度递增
+    setMsg("击中 " + (idx + 1) + " 号! +" + HIT_SCORE + " 分 (地鼠更快了)", "msg-hit");
+  } else {                                        // 打错
+    lives--; score = Math.max(0, score - MISS_PENALTY);
+    setMsg("打错格子 " + (idx + 1) + "! -" + MISS_PENALTY + " 分, 生命 -1", "msg-miss");
+    if (lives <= 0) return endGame();
+  }
+  update();
+}
+
+function update() {
+  document.getElementById("score").textContent = score;
+  drawHearts();
+  document.getElementById("time").textContent =
+    Math.max(0, Math.ceil((endTime - performance.now()) / 1000));
+}
+
+// 主循环: 每 20ms 轮询 (对应终端版的帧循环)
+function loop() {
+  if (!playing) return;
+  const now = performance.now();
+  update();
+  if (now >= endTime) return endGame();
+  if (moleIdx >= 0 && now >= moleDeadline) {      // 地鼠超时逃跑
+    hideMole(); moleIdx = -1;
+    lives--; spawnAt = now + SPAWN_GAP_MS;
+    setMsg("太慢了! 地鼠跑了, 生命 -1", "msg-miss");
+    drawHearts();
+    if (lives <= 0) return endGame();
+  }
+  if (moleIdx < 0 && now >= spawnAt) {            // 生成新地鼠
+    moleIdx = spawnMole(); lastMole = moleIdx;
+    moleDeadline = now + moleStay * 1000;
+    showMole();
+  }
+  timerId = requestAnimationFrame(loop);          // ~帧率控制
+}
+
+function startGame() {
+  cancelAnimationFrame(timerId);
+  score = 0; lives = START_LIVES; hits = 0; swings = 0;
+  moleIdx = -1; lastMole = -1;
+  moleStay = MOLE_START_MS / 1000;
+  spawnAt = 0; endTime = performance.now() + GAME_DURATION * 1000;
+  document.getElementById("gameover").classList.add("hidden");
+  playing = true;
+  setMsg("游戏开始! 看准地鼠, 快按对应数字键或点击地鼠!");
+  update();
+  loop();
+}
+
+function endGame() {
+  playing = false;
+  cancelAnimationFrame(timerId);
+  hideMole(); moleIdx = -1;
+  document.getElementById("fscore").textContent = score;
+  document.getElementById("acc").textContent =
+    "击中地鼠 " + hits + " / 共出手 " + swings + " 次" +
+    (swings > 0 ? "   命中率 " + Math.round(100 * hits / swings) + "%" : "");
+  document.getElementById("gameover").classList.remove("hidden");
+  setMsg("时间到或生命耗尽, 本局结束。");
+}
+
+// 键盘 1~9 击打, q 提前结束本局
+document.addEventListener("keydown", e => {
+  if (e.key >= "1" && e.key <= "9") whack(parseInt(e.key, 10) - 1);
+  else if (e.key === "q" || e.key === "Q") { if (playing) endGame(); }
+});
+
+startGame();
+</script>
+</body>
+</html>

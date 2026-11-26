@@ -1,0 +1,8 @@
+PASS
+hit_score=10 (expect 10)
+miss_score=5 (expect 5)
+lives_after_miss=2 (expect 2)
+click_score=15 (expect 15)
+phase_after_lives0=1 (expect 1)
+reset_score=0 lives=3 (expect 0/3)
+lives_after_timeout=2 (expect 2)
